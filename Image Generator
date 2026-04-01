@@ -1,0 +1,496 @@
+import { useState, useRef, useCallback, useEffect } from "react";
+
+const MODES = [
+  { id: "flowfield", name: "Flow Field", desc: "Particle traces following Perlin-like noise" },
+  { id: "fractal", name: "Fractal Tree", desc: "Recursive branching structures" },
+  { id: "particles", name: "Particle Galaxy", desc: "Orbital particle system" },
+  { id: "waves", name: "Wave Interference", desc: "Overlapping sine wave patterns" },
+  { id: "maze", name: "Generative Maze", desc: "Recursive backtracking maze" },
+  { id: "circles", name: "Circle Packing", desc: "Non-overlapping circle fill" },
+];
+
+const PALETTES = [
+  { name: "Neon", colors: ["#00f0ff", "#ff006e", "#8338ec", "#3a86ff", "#fb5607"] },
+  { name: "Sunset", colors: ["#ff6b35", "#f7c59f", "#efefd0", "#004e89", "#1a659e"] },
+  { name: "Forest", colors: ["#2d6a4f", "#40916c", "#52b788", "#74c69d", "#b7e4c7"] },
+  { name: "Vapor", colors: ["#ff71ce", "#01cdfe", "#05ffa1", "#b967ff", "#fffb96"] },
+  { name: "Mono", colors: ["#ffffff", "#c0c0c0", "#808080", "#404040", "#202020"] },
+  { name: "Fire", colors: ["#ffd60a", "#fca311", "#e85d04", "#dc2f02", "#9d0208"] },
+];
+
+// Simple noise function
+function noise2D(x, y, seed) {
+  const n = Math.sin(x * 127.1 + y * 311.7 + seed * 1731.3) * 43758.5453;
+  return n - Math.floor(n);
+}
+
+function smoothNoise(x, y, seed) {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = x - ix, fy = y - iy;
+  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  const a = noise2D(ix, iy, seed);
+  const b = noise2D(ix + 1, iy, seed);
+  const c = noise2D(ix, iy + 1, seed);
+  const d = noise2D(ix + 1, iy + 1, seed);
+  return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+}
+
+function fbm(x, y, seed, octaves = 4) {
+  let val = 0, amp = 1, freq = 1, max = 0;
+  for (let i = 0; i < octaves; i++) {
+    val += smoothNoise(x * freq, y * freq, seed + i * 100) * amp;
+    max += amp;
+    amp *= 0.5;
+    freq *= 2;
+  }
+  return val / max;
+}
+
+// ── Generators ─────────────────────────
+function generateFlowField(ctx, W, H, palette, seed, params) {
+  ctx.fillStyle = "#0a0a12";
+  ctx.fillRect(0, 0, W, H);
+
+  const numParticles = params.density * 200;
+  const steps = params.complexity * 80;
+  const scale = 0.003 + (1 - params.scale) * 0.01;
+
+  for (let i = 0; i < numParticles; i++) {
+    let x = Math.random() * W;
+    let y = Math.random() * H;
+    const color = palette[Math.floor(Math.random() * palette.length)];
+
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+
+    for (let s = 0; s < steps; s++) {
+      const angle = fbm(x * scale, y * scale, seed) * Math.PI * 4;
+      x += Math.cos(angle) * 1.5;
+      y += Math.sin(angle) * 1.5;
+      if (x < 0 || x > W || y < 0 || y > H) break;
+      ctx.lineTo(x, y);
+    }
+
+    ctx.strokeStyle = color + "18";
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+  }
+}
+
+function generateFractalTree(ctx, W, H, palette, seed, params) {
+  ctx.fillStyle = "#0a0a12";
+  ctx.fillRect(0, 0, W, H);
+
+  const maxDepth = Math.floor(params.complexity * 8) + 4;
+  const spread = 0.3 + params.scale * 0.5;
+  const numTrees = Math.floor(params.density * 3) + 1;
+
+  function branch(x, y, angle, length, depth, colorIdx) {
+    if (depth > maxDepth || length < 2) return;
+
+    const endX = x + Math.cos(angle) * length;
+    const endY = y + Math.sin(angle) * length;
+
+    const alpha = (1 - depth / maxDepth) * 0.8 + 0.1;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(endX, endY);
+    ctx.strokeStyle = palette[colorIdx % palette.length] + Math.floor(alpha * 255).toString(16).padStart(2, "0");
+    ctx.lineWidth = Math.max(0.5, (maxDepth - depth) * 0.8);
+    ctx.stroke();
+
+    const variance = (noise2D(x * 0.01, y * 0.01, seed) - 0.5) * 0.3;
+    const newLen = length * (0.65 + noise2D(depth, seed, x) * 0.15);
+
+    branch(endX, endY, angle - spread + variance, newLen, depth + 1, colorIdx);
+    branch(endX, endY, angle + spread + variance, newLen, depth + 1, colorIdx + 1);
+
+    if (depth > maxDepth * 0.6 && Math.random() > 0.6) {
+      branch(endX, endY, angle + variance * 2, newLen * 0.8, depth + 1, colorIdx + 2);
+    }
+  }
+
+  for (let t = 0; t < numTrees; t++) {
+    const tx = W * (0.2 + t * 0.6 / Math.max(numTrees - 1, 1));
+    branch(tx, H - 20, -Math.PI / 2, H * 0.22, 0, t * 2);
+  }
+}
+
+function generateParticleGalaxy(ctx, W, H, palette, seed, params) {
+  ctx.fillStyle = "#06060c";
+  ctx.fillRect(0, 0, W, H);
+
+  const cx = W / 2, cy = H / 2;
+  const numParticles = params.density * 5000;
+  const arms = Math.floor(params.complexity * 4) + 2;
+  const spread = params.scale * 2 + 0.5;
+
+  for (let i = 0; i < numParticles; i++) {
+    const arm = i % arms;
+    const armAngle = (arm / arms) * Math.PI * 2;
+    const dist = Math.random() * Math.min(W, H) * 0.42;
+    const spiralAngle = dist * 0.008 * spread + armAngle;
+    const scatter = (Math.random() - 0.5) * dist * 0.15;
+
+    const x = cx + Math.cos(spiralAngle) * dist + Math.cos(spiralAngle + Math.PI / 2) * scatter;
+    const y = cy + Math.sin(spiralAngle) * dist + Math.sin(spiralAngle + Math.PI / 2) * scatter;
+
+    const brightness = Math.max(0.1, 1 - dist / (Math.min(W, H) * 0.42));
+    const size = Math.random() * 2 + 0.5;
+    const color = palette[Math.floor(noise2D(x * 0.01, y * 0.01, seed) * palette.length)];
+
+    ctx.beginPath();
+    ctx.arc(x, y, size, 0, Math.PI * 2);
+    ctx.fillStyle = color + Math.floor(brightness * 180).toString(16).padStart(2, "0");
+    ctx.fill();
+  }
+
+  // Center glow
+  const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, 60);
+  glow.addColorStop(0, "rgba(255,255,255,0.15)");
+  glow.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function generateWaves(ctx, W, H, palette, seed, params) {
+  ctx.fillStyle = "#08080f";
+  ctx.fillRect(0, 0, W, H);
+
+  const numWaves = Math.floor(params.complexity * 30) + 10;
+  const amplitude = params.scale * 80 + 20;
+
+  for (let w = 0; w < numWaves; w++) {
+    const freq = 0.005 + noise2D(w, seed, 0) * 0.015;
+    const phase = noise2D(w, seed, 1) * Math.PI * 4;
+    const yOffset = (w / numWaves) * H;
+    const color = palette[w % palette.length];
+
+    ctx.beginPath();
+    for (let x = 0; x <= W; x += 2) {
+      const y = yOffset + Math.sin(x * freq + phase) * amplitude * Math.sin(x * 0.002 + seed);
+      if (x === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = color + "30";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+}
+
+function generateMaze(ctx, W, H, palette, seed, params) {
+  ctx.fillStyle = "#0a0a12";
+  ctx.fillRect(0, 0, W, H);
+
+  const cellSize = Math.floor(20 - params.complexity * 10) + 8;
+  const cols = Math.floor(W / cellSize);
+  const rows = Math.floor(H / cellSize);
+  const grid = Array.from({ length: rows }, () => Array(cols).fill(false));
+  const walls = { h: Array.from({ length: rows + 1 }, () => Array(cols).fill(true)), v: Array.from({ length: rows }, () => Array(cols + 1).fill(true)) };
+
+  // Recursive backtracker
+  const stack = [];
+  let cx = 0, cy = 0;
+  grid[0][0] = true;
+  stack.push([cx, cy]);
+  const rng = (max) => { const v = noise2D(cx + stack.length, cy + stack.length, seed); return Math.floor(v * max); };
+
+  while (stack.length > 0) {
+    const neighbors = [];
+    if (cy > 0 && !grid[cy - 1][cx]) neighbors.push([cx, cy - 1, "n"]);
+    if (cy < rows - 1 && !grid[cy + 1][cx]) neighbors.push([cx, cy + 1, "s"]);
+    if (cx > 0 && !grid[cy][cx - 1]) neighbors.push([cx - 1, cy, "w"]);
+    if (cx < cols - 1 && !grid[cy][cx + 1]) neighbors.push([cx + 1, cy, "e"]);
+
+    if (neighbors.length > 0) {
+      const [nx, ny, dir] = neighbors[rng(neighbors.length) % neighbors.length];
+      if (dir === "n") walls.h[cy][cx] = false;
+      else if (dir === "s") walls.h[cy + 1][cx] = false;
+      else if (dir === "w") walls.v[cy][cx] = false;
+      else if (dir === "e") walls.v[cy][cx + 1] = false;
+      grid[ny][nx] = true;
+      stack.push([cx, cy]);
+      cx = nx; cy = ny;
+    } else {
+      [cx, cy] = stack.pop();
+    }
+  }
+
+  // Draw maze
+  for (let r = 0; r <= rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (walls.h[r] && walls.h[r][c]) {
+        const color = palette[Math.floor(noise2D(r, c, seed) * palette.length)];
+        ctx.strokeStyle = color + "80";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(c * cellSize, r * cellSize);
+        ctx.lineTo((c + 1) * cellSize, r * cellSize);
+        ctx.stroke();
+      }
+    }
+  }
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c <= cols; c++) {
+      if (walls.v[r] && walls.v[r][c]) {
+        const color = palette[Math.floor(noise2D(r, c, seed + 50) * palette.length)];
+        ctx.strokeStyle = color + "80";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(c * cellSize, r * cellSize);
+        ctx.lineTo(c * cellSize, (r + 1) * cellSize);
+        ctx.stroke();
+      }
+    }
+  }
+}
+
+function generateCirclePacking(ctx, W, H, palette, seed, params) {
+  ctx.fillStyle = "#0a0a12";
+  ctx.fillRect(0, 0, W, H);
+
+  const circles = [];
+  const maxAttempts = params.density * 3000;
+  const maxR = params.scale * 60 + 10;
+  const minR = 2;
+
+  for (let i = 0; i < maxAttempts; i++) {
+    const x = Math.random() * W;
+    const y = Math.random() * H;
+    let r = maxR;
+
+    let valid = true;
+    for (const c of circles) {
+      const d = Math.sqrt((x - c.x) ** 2 + (y - c.y) ** 2);
+      const maxAllowed = d - c.r - 1;
+      if (maxAllowed < minR) { valid = false; break; }
+      r = Math.min(r, maxAllowed);
+    }
+
+    // Boundary
+    r = Math.min(r, x, y, W - x, H - y);
+    if (!valid || r < minR) continue;
+
+    circles.push({ x, y, r });
+    const color = palette[Math.floor(noise2D(x * 0.01, y * 0.01, seed) * palette.length)];
+    const alpha = 0.3 + (r / maxR) * 0.5;
+
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.strokeStyle = color + Math.floor(alpha * 255).toString(16).padStart(2, "0");
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+
+    if (r > 8) {
+      ctx.fillStyle = color + "15";
+      ctx.fill();
+    }
+  }
+}
+
+const GENERATORS = {
+  flowfield: generateFlowField,
+  fractal: generateFractalTree,
+  particles: generateParticleGalaxy,
+  waves: generateWaves,
+  maze: generateMaze,
+  circles: generateCirclePacking,
+};
+
+export default function GenArt() {
+  const canvasRef = useRef(null);
+  const [mode, setMode] = useState("flowfield");
+  const [paletteIdx, setPaletteIdx] = useState(0);
+  const [seed, setSeed] = useState(Math.floor(Math.random() * 10000));
+  const [density, setDensity] = useState(0.5);
+  const [complexity, setComplexity] = useState(0.5);
+  const [scale, setScale] = useState(0.5);
+  const [generating, setGenerating] = useState(false);
+  const [history, setHistory] = useState([]);
+
+  const generate = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    setGenerating(true);
+
+    requestAnimationFrame(() => {
+      const ctx = canvas.getContext("2d");
+      const gen = GENERATORS[mode];
+      if (gen) gen(ctx, canvas.width, canvas.height, PALETTES[paletteIdx].colors, seed, { density, complexity, scale });
+
+      // Watermark
+      ctx.fillStyle = "rgba(255,255,255,0.08)";
+      ctx.font = "10px sans-serif";
+      ctx.textAlign = "right";
+      ctx.fillText(`GenArt | seed:${seed}`, canvas.width - 8, canvas.height - 8);
+
+      setHistory(prev => [{ mode, palette: paletteIdx, seed, img: canvas.toDataURL("image/png", 0.6) }, ...prev.slice(0, 11)]);
+      setGenerating(false);
+    });
+  }, [mode, paletteIdx, seed, density, complexity, scale]);
+
+  useEffect(() => { generate(); }, []);
+
+  const randomize = () => {
+    setSeed(Math.floor(Math.random() * 10000));
+    setTimeout(generate, 50);
+  };
+
+  const download = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const link = document.createElement("a");
+    link.download = `genart_${mode}_${seed}.png`;
+    link.href = canvas.toDataURL("image/png");
+    link.click();
+  };
+
+  return (
+    <div style={{
+      minHeight: "100vh", background: "#08080f",
+      fontFamily: "'SF Pro Display', -apple-system, sans-serif",
+      color: "#c8d0e0", padding: 20,
+    }}>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>
+            <span style={{ color: "#8b5cf6" }}>Gen</span>Art
+          </div>
+          <div style={{ fontSize: 11, color: "#3a4258" }}>Procedural Image Generation Engine</div>
+        </div>
+        <div style={{ fontSize: 11, color: "#2a3040" }}>
+          Angel Nunez | Seed: {seed}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 260px", gap: 16 }}>
+        {/* Canvas */}
+        <div>
+          <div style={{ background: "#0e1018", border: "1px solid #1a2030", borderRadius: 10, padding: 8 }}>
+            <canvas
+              ref={canvasRef}
+              width={700}
+              height={500}
+              style={{ width: "100%", height: "auto", borderRadius: 6, display: "block" }}
+            />
+          </div>
+
+          {/* History */}
+          {history.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 11, color: "#3a4258", marginBottom: 6 }}>Generation History</div>
+              <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
+                {history.map((h, i) => (
+                  <img key={i} src={h.img} alt="" onClick={() => { setMode(h.mode); setPaletteIdx(h.palette); setSeed(h.seed); setTimeout(generate, 50); }}
+                    style={{ width: 72, height: 52, borderRadius: 4, cursor: "pointer", border: "1px solid #1a2030", objectFit: "cover", opacity: 0.7, transition: "opacity 0.2s" }}
+                    onMouseEnter={e => e.target.style.opacity = 1}
+                    onMouseLeave={e => e.target.style.opacity = 0.7}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Controls */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {/* Mode selector */}
+          <div style={{ background: "#0e1018", border: "1px solid #1a2030", borderRadius: 10, padding: 12 }}>
+            <div style={{ fontSize: 10, color: "#3a4258", fontWeight: 600, letterSpacing: 1.2, marginBottom: 8 }}>ALGORITHM</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {MODES.map(m => (
+                <button key={m.id} onClick={() => setMode(m.id)} style={{
+                  padding: "7px 10px", borderRadius: 6, border: "1px solid",
+                  borderColor: mode === m.id ? "#8b5cf633" : "#141820",
+                  background: mode === m.id ? "#8b5cf611" : "transparent",
+                  color: mode === m.id ? "#8b5cf6" : "#4a5568",
+                  fontSize: 12, cursor: "pointer", textAlign: "left",
+                  transition: "all 0.15s",
+                }}>
+                  <div style={{ fontWeight: 600 }}>{m.name}</div>
+                  <div style={{ fontSize: 10, opacity: 0.6, marginTop: 1 }}>{m.desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Palette */}
+          <div style={{ background: "#0e1018", border: "1px solid #1a2030", borderRadius: 10, padding: 12 }}>
+            <div style={{ fontSize: 10, color: "#3a4258", fontWeight: 600, letterSpacing: 1.2, marginBottom: 8 }}>PALETTE</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+              {PALETTES.map((p, i) => (
+                <button key={i} onClick={() => setPaletteIdx(i)} style={{
+                  padding: "4px 8px", borderRadius: 4, border: "1px solid",
+                  borderColor: paletteIdx === i ? "#8b5cf633" : "#141820",
+                  background: paletteIdx === i ? "#8b5cf611" : "transparent",
+                  color: paletteIdx === i ? "#c8d0e0" : "#4a5568",
+                  fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
+                }}>
+                  <div style={{ display: "flex", gap: 1 }}>
+                    {p.colors.slice(0, 3).map((c, j) => (
+                      <div key={j} style={{ width: 8, height: 8, borderRadius: 2, background: c }} />
+                    ))}
+                  </div>
+                  {p.name}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Parameters */}
+          <div style={{ background: "#0e1018", border: "1px solid #1a2030", borderRadius: 10, padding: 12 }}>
+            <div style={{ fontSize: 10, color: "#3a4258", fontWeight: 600, letterSpacing: 1.2, marginBottom: 8 }}>PARAMETERS</div>
+            {[
+              { label: "Density", value: density, set: setDensity },
+              { label: "Complexity", value: complexity, set: setComplexity },
+              { label: "Scale", value: scale, set: setScale },
+            ].map(p => (
+              <div key={p.label} style={{ marginBottom: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 2 }}>
+                  <span style={{ color: "#4a5568" }}>{p.label}</span>
+                  <span style={{ color: "#8b5cf6" }}>{p.value.toFixed(2)}</span>
+                </div>
+                <input type="range" min={0.1} max={1} step={0.01} value={p.value} onChange={e => p.set(parseFloat(e.target.value))}
+                  style={{ width: "100%", accentColor: "#8b5cf6" }} />
+              </div>
+            ))}
+            <div style={{ marginBottom: 4 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 2 }}>
+                <span style={{ color: "#4a5568" }}>Seed</span>
+                <span style={{ color: "#8b5cf6" }}>{seed}</span>
+              </div>
+              <input type="range" min={0} max={9999} value={seed} onChange={e => setSeed(parseInt(e.target.value))}
+                style={{ width: "100%", accentColor: "#8b5cf6" }} />
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <button onClick={generate} disabled={generating} style={{
+              padding: "10px", borderRadius: 6, border: "none",
+              background: generating ? "#3a3a5a" : "#8b5cf6",
+              color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer",
+            }}>
+              {generating ? "Generating..." : "Generate"}
+            </button>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button onClick={randomize} style={{
+                flex: 1, padding: "8px", borderRadius: 6, border: "1px solid #1a2030",
+                background: "transparent", color: "#4a5568", fontSize: 12, cursor: "pointer",
+              }}>Random Seed</button>
+              <button onClick={download} style={{
+                flex: 1, padding: "8px", borderRadius: 6, border: "1px solid #1a2030",
+                background: "transparent", color: "#4a5568", fontSize: 12, cursor: "pointer",
+              }}>Download PNG</button>
+            </div>
+          </div>
+
+          <div style={{ fontSize: 10, color: "#1a202c", textAlign: "center", marginTop: "auto" }}>
+            GenArt v1.0 | No AI APIs, pure algorithms
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

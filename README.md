@@ -35,4 +35,4 @@ Each algorithm uses deterministic pseudo-random noise functions seeded by an int
 ## Author
 
 **Angel Nunez**
-B.S. Computer Science, San Diego State University
+
